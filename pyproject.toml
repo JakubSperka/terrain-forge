@@ -1,0 +1,16 @@
+[project]
+name = "terrain-forge"
+version = "0.1.0"
+description = "Terrain Forge - GIS to 3D Print: GeoTIFF terrain and GeoPackage features for multicolor 3D printing"
+requires-python = ">=3.11,<3.14"
+dependencies = ["numpy>=2,<3", "rasterio>=1.4,<2", "geopandas>=1,<2", "shapely>=2,<3", "trimesh>=4,<6", "manifold3d>=3,<4", "mapbox-earcut>=1,<3", "PySide6>=6.7,<7", "reportlab>=4,<5"]
+
+[project.scripts]
+terrain-forge = "terrain_forge.desktop:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = ["pytest>=8,<10"]
