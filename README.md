@@ -20,11 +20,15 @@ The first command installs Python and dependencies. This is a source application
 1. Choose a GeoTIFF elevation raster, projected in meters (for example local UTM). The first raster band is used. Elevations default to meters; use 0.3048 for feet.
    For a large raster, optionally choose **AOI GeoPackage** and **AOI polygon layer**. All polygons in that layer are combined and reprojected to the DEM CRS. The model is clipped to their exact outlines, including holes; disconnected polygons produce separate pieces. Only the AOI's bounding region is sampled through a virtual raster, keeping the elevation array bounded by the selected sample count. Raster storage block size can still affect disk reads. Width/height and resolution refer to the AOI bounding box intersected with the DEM. NoData inside or immediately around the outline must be filled for boundary interpolation. Leave the AOI file empty to use the full DEM.
 2. Set printed width, printed height, or a scale denominator (25000 means 1:25,000). The other dimension follows the raster footprint proportions.
-3. Set vertical exaggeration and base thickness. The lowest sampled elevation sits at the base thickness; the model bottom is Z=0.
+3. Set vertical exaggeration and base thickness. **Terrain baseline → Automatic minimum** places the lowest sampled elevation at the base thickness. Select **Custom elevation** to use a reference elevation in ground metres instead; the model bottom remains Z=0.
 4. Optionally load a GeoPackage and select a polygon or polyline layer. Choose its operation, depth/height, floor thickness and line width, then click **Add layer**. Add another copy and change its file, layer or settings to process multiple layers. Selecting a table row loads it into the controls; edits update that selected row immediately. Vectors are reprojected to the DEM CRS. Polyline width is the full width in printed millimeters; polygons retain their footprint and holes.
 5. Select an operation and export. Import the 3MF as one assembly with multiple parts and assign each part a filament in your slicer.
 
 Before export, click **Calculate dimensions & scale** to see the final X/Y footprint, total Z height including the base and raised features, base/above-base breakdown, and horizontal and vertical scales. This builds the same solids used for export, including AOI clipping, without writing a 3MF. Complex models may take time. Export reuses that calculation while model settings and source files remain unchanged; edits mark it outdated.
+
+Use **Read AOI elevation range** in Model dimensions & terrain to inspect minimum and maximum ground elevations without building solids. These are sampled elevations after unit conversion, including neighbors used for interpolation at the AOI boundary; they are not exact full-resolution source-raster statistics. They depend on Samples and any enabled NoData repair. This read works even if the current custom reference is too high, so you can correct it.
+
+The custom reference must be at or below the sampled minimum and can be negative. For elevations 125–453 m with reference 100 m, the terrain spans 25–353 m above the reference before print scaling and exaggeration; base thickness is then added. Reference 100 m uses less material than reference 0 m, while Automatic minimum (125 m in this example) uses still less. This shifts the elevation datum without clipping terrain or changing contour elevation labels. The reference settings are saved in presets; older presets retain Automatic minimum.
 
 **Save settings…** writes a versioned JSON file containing all parameters, file paths and layer selections. **Load settings…** restores them. Settings do not embed the source datasets or calculated meshes. File dialogs remember the last selected directory between app sessions; a populated file field still opens at its current path.
 
@@ -71,7 +75,7 @@ Depth and thickness are vertical Z distances in printed mm, independent of exagg
 
 ## Geometry and scale
 
-For scale 1:S, horizontal mm per ground meter = 1000/S. Model Z = base + (elevation − minimum elevation) × elevation-unit factor × horizontal factor × exaggeration. The desktop reports final footprint and effective scale after export.
+For scale 1:S, horizontal mm per ground meter = 1000/S. Convert source elevations to metres first, then model Z = base + (elevation in metres − reference elevation in metres) × horizontal factor × exaggeration. The reference is the sampled minimum in Automatic minimum mode. The desktop reports final footprint and effective scale after export.
 
 The grid uses bilinear resampling with the selected number of samples on its longest edge; boundary values are extended from the first interior samples. This approximates terrain and is not an exact preservation of every source pixel. Vector footprints are triangulated separately, rather than rasterized onto the DEM grid. Manifold boolean operations produce the cavity and colored solid. Cuts reaching the bottom are rejected.
 

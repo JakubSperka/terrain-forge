@@ -28,6 +28,32 @@ def test_height_field():
     assert mesh.volume == pytest.approx(3000)
 
 
+def test_custom_terrain_reference_preserves_relief_and_contours(inputs):
+    from dataclasses import replace
+    from terrain_forge.core import elevation_summary
+    automatic = replace(inputs, gpkg='', contours='Enabled', contour_interval=5)
+    z,w,h,_,_,factor,minimum = load_terrain(automatic, include_elevation=True)
+    custom = replace(automatic, baseline_mode='Custom elevation', baseline_elevation=minimum-25)
+    shifted,*_ = load_terrain(custom)
+    assert np.allclose(shifted-z,25*factor*custom.exaggeration)
+    original_lines,count = contour_footprint(automatic,z,w,h,factor,minimum)
+    shifted_lines,shifted_count = contour_footprint(custom,shifted,w,h,factor,minimum)
+    assert count == shifted_count
+    # Floating point line joins can slightly change buffered corner facets.
+    # Check both sub-print-resolution displacement and negligible area change.
+    assert original_lines.hausdorff_distance(shifted_lines) < 0.01
+    assert original_lines.symmetric_difference(shifted_lines).area/original_lines.area < 1e-5
+    parts,metrics = build_model(custom)
+    assert all(mesh.is_volume for _,_,mesh in parts)
+    assert metrics['reference_elevation'] == pytest.approx(minimum-25)
+    assert metrics['height'] == pytest.approx(float(shifted.max()))
+    assert metrics['elevation_max'] == pytest.approx(elevation_summary(automatic)['elevation_max'])
+    invalid = replace(custom,baseline_elevation=minimum+1)
+    with pytest.raises(ValueError,match='at or below'):
+        load_terrain(invalid)
+    assert elevation_summary(invalid)['elevation_min'] == pytest.approx(minimum)
+
+
 @pytest.mark.parametrize("mode", ["Flush inlay","Recessed channel","Raised feature","Cut only"])
 def test_pipeline(inputs, mode):
     inputs.mode = mode

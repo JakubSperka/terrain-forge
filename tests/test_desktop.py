@@ -50,6 +50,8 @@ def test_settings_roundtrip_and_directory(tmp_path, monkeypatch):
     window.fields['size_mode'].setCurrentText('Scale denominator')
     window.fields['size'].setValue(25000)
     window.fields['exaggeration'].setValue(2.5)
+    window.fields['baseline_mode'].setCurrentText('Custom elevation')
+    window.fields['baseline_elevation'].setValue(100)
     window.fields['export_mode'].setCurrentText('Print-bed grid')
     window.fields['bed_width'].setValue(256)
     window.fields['bed_margin'].setValue(0)
@@ -70,6 +72,7 @@ def test_settings_roundtrip_and_directory(tmp_path, monkeypatch):
     assert window.values() == expected
     assert window.fields['bed_width'].isEnabled()
     assert window.fields['contour_interval'].isEnabled()
+    assert window.fields['baseline_elevation'].isEnabled()
     window.close()
     reopened = Window(QSettings(str(tmp_path/'preferences.ini'), QSettings.Format.IniFormat))
     assert reopened.dialog_start() == str(tmp_path)

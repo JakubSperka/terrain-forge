@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QFormLayout,
     QSpinBox, QLabel, QMessageBox, QPlainTextEdit, QScrollArea, QTableWidget,
     QTableWidgetItem, QAbstractItemView, QHeaderView, QDialog, QGroupBox)
 import pyogrio
-from .core import Settings, generate, build_model, configured_features
+from .core import Settings, generate, build_model, configured_features, elevation_summary
 
 FEATURE_KEYS=('gpkg','layer','mode','depth','thickness','line_width')
 
@@ -37,6 +37,8 @@ class ParameterSpinBox(NoWheelMixin, QSpinBox):
 
 
 PARAMETER_HELP = {
+    'baseline_mode':'Automatic minimum uses the lowest sampled elevation, minimizing material. Custom elevation uses the ground elevation entered below. Base thickness is added in both modes.',
+    'baseline_elevation':'Reference elevation in ground meters after elevation-unit conversion. Must be at or below the sampled minimum. Model Z = base + (elevation - reference) × horizontal scale factor × exaggeration. This does not clip terrain.',
     'nodata_repair':'Opt-in interpolation of small enclosed NoData holes in the sampled grid.\nNever fills edge-connected gaps or edits the source TIFF. Repaired cells are shown in a map and exported as a report.',
     'repair_max_cells':'Maximum number of connected missing cells per hole in the sampled grid, not source raster pixels.\nChanging Samples changes the ground area represented by each cell. Larger or edge-connected holes still stop export.',
     'repair_radius':'Maximum interpolation search radius in sampled cells. A hole is accepted only if every cell can be filled.\nUses inverse-distance interpolation from valid neighbors; no smoothing of existing elevations.',
@@ -119,7 +121,7 @@ PARAMETER_HELP = {
     "elevation_factor": "Converts the DEM's elevation values to meters before scaling.\n"
                         "Use 1 for elevations in meters, 0.3048 for feet, or 0.01 for centimeters.\n"
                         "This changes elevation units only; the DEM's horizontal CRS must already use meters.",
-    "base": "Printed distance in millimeters from the flat model bottom to the lowest sampled terrain point.\n"
+    "base": "Printed thickness in millimeters below the reference elevation plane. With Automatic minimum, the lowest sampled terrain point sits here.\n"
             "For flush inlays or empty cuts, this must exceed Cut depth.\n"
             "For recessed channels, it must exceed Cut depth + Colored channel floor thickness.",
     "mode": "Flush inlay: replace a surface layer with colored material, keeping the original surface height.\n"
@@ -146,6 +148,7 @@ PARAMETER_HELP = {
 
 
 class Worker(QThread):
+    elevations = Signal(object)
     message = Signal(str)
     success = Signal(str)
     failure = Signal(str)
@@ -159,7 +162,9 @@ class Worker(QThread):
 
     def run(self):
         try:
-            if self.preview:
+            if self.preview == 'elevations':
+                self.elevations.emit(elevation_summary(self.settings))
+            elif self.preview:
                 self.calculated.emit(build_model(self.settings, self.message.emit))
             else:
                 _, summary = generate(self.settings, self.message.emit, self.prepared)
@@ -204,7 +209,7 @@ class Window(QWidget):
         section_specs = [
             ('Input data & area of interest', ('dem','aoi_gpkg','aoi_layer')),
             ('NoData repair', ('nodata_repair','repair_max_cells','repair_radius')),
-            ('Model dimensions & terrain', ('size_mode','size','exaggeration','elevation_factor','base','samples')),
+            ('Model dimensions & terrain', ('size_mode','size','exaggeration','elevation_factor','base','baseline_mode','baseline_elevation','samples')),
             ('Feature layers & operations', ('gpkg','layer','mode','depth','thickness','line_width')),
             ('Contour lines', ('contours','contour_operation','contour_interval','contour_origin','contour_width','contour_depth','contour_thickness')),
             ('Major contours & elevation labels', ('major_contours','major_labels','major_every','major_width','major_depth','major_label_height')),
@@ -298,6 +303,21 @@ class Window(QWidget):
             buttons.addWidget(button)
         parameter_forms['gpkg'].addRow('',buttons)
         resolution = ParameterSpinBox()
+        self.fields['baseline_mode'] = ParameterComboBox()
+        self.fields['baseline_mode'].addItems(['Automatic minimum','Custom elevation'])
+        add_parameter('Terrain baseline',self.fields['baseline_mode'],'baseline_mode')
+        self.fields['baseline_elevation'] = ParameterDoubleSpinBox()
+        self.fields['baseline_elevation'].setRange(-100000,100000)
+        self.fields['baseline_elevation'].setDecimals(3)
+        add_parameter('Reference elevation (m)',self.fields['baseline_elevation'],'baseline_elevation')
+        self.fields['baseline_elevation'].setEnabled(False)
+        self.fields['baseline_mode'].currentTextChanged.connect(lambda mode: self.fields['baseline_elevation'].setEnabled(mode=='Custom elevation'))
+        self.elevation_button = QPushButton('Read AOI elevation range')
+        self.elevation_button.setToolTip('Read the sampled terrain minimum and maximum without building 3D geometry. Includes boundary interpolation neighbors; values depend on Samples and elevation-unit conversion.')
+        self.elevation_button.clicked.connect(self.read_elevations)
+        self.elevation_range = QLabel('Elevation range not read yet.')
+        self.elevation_range.setWordWrap(True)
+        parameter_forms['size'].addRow(self.elevation_button,self.elevation_range)
         resolution.setRange(8,800)
         resolution.setValue(160)
         self.fields["samples"] = resolution
@@ -499,6 +519,7 @@ class Window(QWidget):
             self.invalidate_calculation()
 
     def invalidate_calculation(self, *args):
+        self.elevation_range.setText('Elevation range not current — click Read AOI elevation range.')
         self.prepared = self.prepared_settings = None
         self.prepared_files = None
         self.repair_map_button.setEnabled(False)
@@ -705,6 +726,22 @@ class Window(QWidget):
             control.setEnabled(not busy)
         self.repair_map_button.setEnabled(not busy and self.prepared is not None and 'repair' in self.prepared[1])
 
+    def read_elevations(self):
+        values = self.values()
+        if not values['dem']:
+            QMessageBox.warning(self, 'Missing DEM', 'Choose an elevation GeoTIFF first.')
+            return
+        self.set_busy(True)
+        self.elevation_range.setText('Reading sampled elevations…')
+        self.worker = Worker(Settings(**values), preview='elevations')
+        self.worker.elevations.connect(self.show_elevations)
+        self.worker.failure.connect(lambda error: self.elevation_range.setText('Cannot read elevations: '+error))
+        self.worker.finished.connect(self.finished)
+        self.worker.start()
+
+    def show_elevations(self, values):
+        self.elevation_range.setText(f"Sampled AOI + boundary neighbors: min {values['elevation_min']:.3f} m; max {values['elevation_max']:.3f} m")
+
     def run_calculation(self):
         values = self.values()
         if not values["dem"]:
@@ -729,12 +766,16 @@ class Window(QWidget):
         self.prepared, self.prepared_settings = result, values
         self.prepared_files = self.file_signature(values)
         m = result[1]
+        if 'elevation_min' in m:
+            self.show_elevations(m)
         self.dimensions.setText(
             f"Footprint (X × Y): {m['width']:.2f} × {m['length']:.2f} mm\n"
             f"Total height (Z, including base): {m['height']:.2f} mm\n"
             f"Base: {m['base']:.2f} mm + above-base terrain/features: {m['above_base']:.2f} mm\n"
             f"Horizontal scale: 1:{m['scale']:,.2f}  |  Vertical scale: 1:{m['vertical_scale']:,.2f}"
         )
+        if 'reference_elevation' in m:
+            self.dimensions.setText(self.dimensions.text()+f"\nGround elevation: {m['elevation_min']:.3f}–{m['elevation_max']:.3f} m (sampled AOI + boundary neighbors); reference: {m['reference_elevation']:.3f} m")
         if 'grid_cols' in m:
             self.dimensions.setText(self.dimensions.text()+
                 f"\nGrid: {m['grid_cols']} columns × {m['grid_rows']} rows; up to {m['grid_cols']*m['grid_rows']} tiles"

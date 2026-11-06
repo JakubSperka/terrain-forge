@@ -34,6 +34,8 @@ class Settings:
     base: float = 3
     samples: int = 160
     elevation_factor: float = 1
+    baseline_mode: str = 'Automatic minimum'
+    baseline_elevation: float = 0
     gpkg: str = ""
     layer: str = ""
     mode: str = "Flush inlay"
@@ -269,8 +271,9 @@ def load_terrain(s, include_aoi=False, include_elevation=False, include_repair=F
                              "Enable small-hole repair, increase its limits for enclosed holes, or fill/crop the DEM in GIS. "
                              "Edge-connected gaps are never filled automatically.")
         data[~required] = data[required].min()
-        data = np.flipud(data) * s.elevation_factor
-        z = s.base + (data-data.min()) * factor * s.exaggeration
+        data = np.flipud(data).astype(np.float64) * s.elevation_factor
+        reference = terrain_reference(s, float(data.min()))
+        z = s.base + (data-reference) * factor * s.exaggeration
     result = z, w*factor, h*factor, crs, (west, south, east, north), factor
     if include_aoi:
         result = (*result, aoi)
@@ -324,6 +327,22 @@ def footprint_prism(footprint, bounds, factor, ceiling):
     return pieces[0] if len(pieces) == 1 else boolean("union", pieces)
 
 
+def terrain_reference(s, elevation_min):
+    if s.baseline_mode == 'Automatic minimum':
+        return elevation_min
+    if s.baseline_mode != 'Custom elevation':
+        raise ValueError('Unknown baseline mode.')
+    if not math.isfinite(s.baseline_elevation) or s.baseline_elevation > elevation_min:
+        raise ValueError(f'Reference elevation must be finite and at or below the sampled minimum ({elevation_min:.3f} m).')
+    return s.baseline_elevation
+
+
+def elevation_summary(s):
+    """Read the sampled AOI without building solids or enforcing a custom baseline."""
+    z, _, _, _, _, factor, minimum = load_terrain(replace(s, baseline_mode='Automatic minimum'), include_elevation=True)
+    return dict(elevation_min=minimum, elevation_max=minimum+float(np.ptp(z))/(factor*s.exaggeration))
+
+
 def contour_footprint(s, z, width, height, factor, elevation_min, kind='all', label_zones=None):
     """Trace isolines on the same triangles used by the printable terrain."""
     for name in ('contour_interval','contour_width','contour_depth'):
@@ -362,7 +381,7 @@ def contour_footprint(s, z, width, height, factor, elevation_min, kind='all', la
     for index in range(start,stop):
         if kind=='major' and index%s.major_every!=0 or kind=='minor' and index%s.major_every==0:
             continue
-        level=s.base+(s.contour_origin+index*s.contour_interval-elevation_min)*factor*s.exaggeration
+        level=s.base+(s.contour_origin+index*s.contour_interval-terrain_reference(s,elevation_min))*factor*s.exaggeration
         selected=triangles[(lo<=level)&(hi>level)]
         if not len(selected):
             continue
@@ -516,6 +535,9 @@ def build_model(s, progress=lambda message: None):
     maximum = np.max([mesh.bounds[1] for _,_,mesh in parts], axis=0)
     dimensions = maximum-minimum
     metrics = dict(width=float(dimensions[0]), length=float(dimensions[1]),
+                   elevation_min=elevation_min,
+                   elevation_max=elevation_min+float(np.ptp(z))/(factor*s.exaggeration),
+                   reference_elevation=terrain_reference(s,elevation_min),
                    height=float(dimensions[2]), base=s.base,
                    above_base=float(maximum[2]-s.base),
                    scale=1000/factor, vertical_scale=1000/factor/s.exaggeration)
